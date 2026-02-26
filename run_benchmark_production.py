@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
 import json
-import weave
 import asyncio
 import os
 import re
 import ast
 import textwrap
 import time
+import pandas as pd
 from fire import Fire
 from dotenv import load_dotenv
 load_dotenv()
 
-from weave_utils.models import LiteLLMModel, MajorityVoteModel
+# Arize Phoenix Imports
+import phoenix as px
+from openinference.instrumentation.litellm import LiteLLMInstrumentor
+from opentelemetry import trace as otel_trace
+from opentelemetry.sdk import trace as sdk_trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+from utils.models import LiteLLMModel, MajorityVoteModel
 
 # Prompts système optimisés pour chaque type de dataset
 SYSTEM_PROMPTS = {
@@ -389,7 +398,6 @@ def load_dataset_from_source(source_path, dataset_type=None):
     else:
         raise ValueError(f"Type de dataset non supporté: {dataset_type}")
 
-@weave.op()
 async def evaluate_code_final(answer: str, output: str, evaluator_model, dataset_type: str = "code") -> dict:
     """Évalue la réponse du modèle avec une méthode complète"""
     if output is None:
@@ -426,12 +434,33 @@ async def evaluate_code_final(answer: str, output: str, evaluator_model, dataset
     
     return {'exact_match': False, 'reason': 'not_equivalent'}
 
-def run_benchmark(
+def setup_phoenix(project_name="simple_bench"):
+    """Configure Arize Phoenix pour le traçage"""
+    px.launch_app()
+
+    resource = Resource(attributes={
+        "service.name": project_name,
+    })
+
+    tracer_provider = sdk_trace.TracerProvider(resource=resource)
+    otel_trace.set_tracer_provider(tracer_provider)
+
+    # Configurer l'exportateur OTLP pour Phoenix local
+    # Phoenix écoute par défaut sur le port 6006, et l'endpoint OTLP est /v1/traces
+    otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:6006/v1/traces")
+    span_processor = BatchSpanProcessor(otlp_exporter)
+    tracer_provider.add_span_processor(span_processor)
+
+    # Instrumenter LiteLLM
+    LiteLLMInstrumentor().instrument()
+
+    print(f"Arize Phoenix configuré. Dashboard : http://localhost:6006. Projet : {project_name}")
+
+async def run_benchmark_async(
     model_name: str = "qwen3:14b",
     dataset_source: str = "./sql-console-for-openai-openai-humaneval.json",
     dataset_type: str = None,
     num_responses: int = 1,
-    entity: str = "laurentvv-none",
     project: str = "simple_bench",
     temp: float = 0.1,
     max_tokens: int = 2048,
@@ -440,17 +469,14 @@ def run_benchmark(
     custom_system_prompt: str = None,
 ):
     """
-    Exécute un benchmark d'évaluation sur un modèle et un dataset donnés.
+    Exécute un benchmark d'évaluation de manière asynchrone.
     """
     start_time = time.time()
     
     if dataset_type is None:
         dataset_type = detect_dataset_type(dataset_source)
     
-    if entity is not None:
-        weave.init(f"{entity}/{project}")
-    else:
-        weave.init(f"{project}")
+    setup_phoenix(project)
     
     dataset = load_dataset_from_source(dataset_source, dataset_type)
     
@@ -481,53 +507,77 @@ def run_benchmark(
         system_prompt="Vous êtes un évaluateur expert en programmation."
     )
     
-    @weave.op()
-    def score_function(answer: str, output: str) -> dict:
-        return asyncio.run(evaluate_code_final(answer, output, evaluator_model, dataset_type))
+    results = []
+    correct_count = 0
+    total_count = len(dataset)
     
-    evaluation = weave.Evaluation(
-        dataset=dataset,
-        scorers=[score_function],
-        trials=1,
-    )
+    print(f"Démarrage de l'évaluation avec le modèle {model_name} sur {total_count} exemples...")
+
+    # Créer un traceur pour les étapes manuelles si nécessaire
+    tracer = otel_trace.get_tracer(__name__)
     
-    print(f"Démarrage de l'évaluation avec le modèle {model_name}...")
-    result = asyncio.run(evaluation.evaluate(model))
+    for entry in dataset:
+        with tracer.start_as_current_span("evaluate_item") as span:
+            span.set_attribute("question_id", entry["question_id"])
+
+            # Prédiction
+            output = await model.predict(entry["prompt"])
+
+            # Évaluation
+            score_result = await evaluate_code_final(entry["answer"], output, evaluator_model, dataset_type)
+
+            is_correct = score_result.get('exact_match', False)
+            if is_correct:
+                correct_count += 1
+
+            results.append({
+                "question_id": entry["question_id"],
+                "prompt": entry["prompt"],
+                "expected": entry["answer"],
+                "actual": output,
+                "is_correct": is_correct,
+                "reason": score_result.get('reason', 'unknown')
+            })
+
+            span.set_attribute("is_correct", is_correct)
+            span.set_attribute("reason", score_result.get('reason', 'unknown'))
+
+    elapsed = time.time() - start_time
     
     print("\n=== Résultats de l'évaluation ===\n")
-    print(result)
+    if total_count > 0:
+        print(f"Résultat final: {correct_count}/{total_count} correct ({correct_count/total_count*100:.2f}%)")
+        print(f"Temps d'exécution: {elapsed:.1f}s")
     
-    try:
-        score_data = result.get('score_function', {}) if result else {}
-        exact_match_data = score_data.get('exact_match', {}) if score_data else {}
-        
-        total = exact_match_data.get('true_count', 0) + exact_match_data.get('false_count', 0)
-        correct = exact_match_data.get('true_count', 0)
-        elapsed = time.time() - start_time
-        
-        if total > 0:
-            print(f"\nRésultat final: {correct}/{total} correct ({correct/total*100:.2f}%)")
-            print(f"Temps d'exécution: {elapsed:.1f}s")
-            
-            try:
-                import winsound
-                for _ in range(3):
-                    winsound.Beep(1000, 500)
-            except (ImportError, Exception):
-                # Fallback avec beep système
-                for _ in range(5):
-                    print("\a", end="", flush=True)
-                print("\n🔔 Benchmark terminé !")
-                # Alternative avec os.system
-                try:
-                    import os
-                    os.system('echo \a')
-                except:
-                    pass
-        else:
-            print("\nAucune question évaluée.")
-    except Exception as e:
-        print(f"Erreur lors du calcul des statistiques: {e}")
+    # Attendre que les spans soient envoyés
+    await asyncio.sleep(2)
+
+    print(f"\n🔔 Benchmark terminé ! Consultez le dashboard Phoenix : http://localhost:6006")
+
+def run_benchmark(
+    model_name: str = "qwen3:14b",
+    dataset_source: str = "./sql-console-for-openai-openai-humaneval.json",
+    dataset_type: str = None,
+    num_responses: int = 1,
+    project: str = "simple_bench",
+    temp: float = 0.1,
+    max_tokens: int = 2048,
+    top_p: float = 0.95,
+    max_retries: int = 3,
+    custom_system_prompt: str = None,
+):
+    asyncio.run(run_benchmark_async(
+        model_name=model_name,
+        dataset_source=dataset_source,
+        dataset_type=dataset_type,
+        num_responses=num_responses,
+        project=project,
+        temp=temp,
+        max_tokens=max_tokens,
+        top_p=top_p,
+        max_retries=max_retries,
+        custom_system_prompt=custom_system_prompt
+    ))
 
 if __name__ == "__main__":
     Fire(run_benchmark)

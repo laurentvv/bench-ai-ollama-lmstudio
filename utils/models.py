@@ -1,7 +1,6 @@
 import os
 import asyncio
 import random
-import weave
 from typing import Optional
 
 import time
@@ -32,27 +31,25 @@ MODEL_MAP = {
 EXPONENTIAL_BASE = 2    
 
 
-class MajorityVoteModel(weave.Model):
-    model: weave.Model
-    num_responses: int = 3
+class MajorityVoteModel:
+    def __init__(self, model, num_responses: int = 3):
+        self.model = model
+        self.num_responses = num_responses
     
-    @weave.op()
     async def predict(self, prompt: str):
         tasks = [self.model.predict(prompt) for _ in range(self.num_responses)]
         return await asyncio.gather(*tasks)
 
 
-class LiteLLMModel(weave.Model):
-    model_name: str
-    system_prompt: Optional[str] = None
-    temp: float = 0.7
-    max_tokens: int = 2048
-    top_p: float = 0.95
-    max_retries: int = 3
-    
-    def __init__(self, **data):
-        super().__init__(**data)
-        # Add any additional initialization logic here
+class LiteLLMModel:
+    def __init__(self, model_name: str, system_prompt: Optional[str] = None, temp: float = 0.7, max_tokens: int = 2048, top_p: float = 0.95, max_retries: int = 3):
+        self.model_name = model_name
+        self.system_prompt = system_prompt
+        self.temp = temp
+        self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.max_retries = max_retries
+
         # Vérifier si le modèle est dans MODEL_MAP ou s'il commence déjà par 'ollama/'
         if self.model_name not in MODEL_MAP and not self.model_name.startswith('ollama/'):
             # Ajouter automatiquement le modèle au dictionnaire
@@ -64,7 +61,6 @@ class LiteLLMModel(weave.Model):
             self.model_name = f"ollama/{self.model_name}"
 
     
-    @weave.op()
     async def predict(self, prompt: str):
         delay = 2
 

@@ -1,4 +1,9 @@
 fire
 litellm
 python-dotenv
-weave
+arize-phoenix
+openinference-instrumentation-litellm
+arize-phoenix-evals
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+pandas

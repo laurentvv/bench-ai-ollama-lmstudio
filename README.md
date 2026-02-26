@@ -25,6 +25,7 @@ Bench AI is a lightweight and efficient tool for evaluating the performance of l
 - 📊 **Advanced evaluation** - Tolerates formatting, indentation, and functional equivalence differences
 - 📈 **Detailed analysis** - Performance analysis scripts included
 - 🧩 **Extensible** - Easy to adapt for different types of benchmarks
+- 👁️ **Observability** - Integrated with Arize Phoenix for tracing and evaluation
 
 ## 🛠️ Prerequisites
 
@@ -67,36 +68,34 @@ Bench AI is a lightweight and efficient tool for evaluating the performance of l
    python run_benchmark_production.py --model_name=qwen3:14b --dataset_source=sql-console-for-google-code-x-glue-ct-code-to-text.json
    ```
 
-## 📊 Tracking with Weave
+## 📊 Observability with Arize Phoenix
 
-Bench AI is integrated with [Weave](https://wandb.ai/site/weave), a powerful tool for tracking and visualizing your experiments.
+Bench AI is integrated with [Arize Phoenix](https://phoenix.arize.com/), an open-source observability library for LLMs. It allows you to trace your model's predictions and evaluate their quality in real-time.
 
-### Weave Setup
+### Phoenix Setup
 
-1. **Create a Weave account**: Visit the [Weave website](https://wandb.ai/site/weave) and create a free account.
+Arize Phoenix runs locally and doesn't require complex configuration or Docker.
 
-2. **Connect to Weave**: Once your account is created, you can connect via CLI (not necessary for this project, managed by API).
+1. **Installation**: Already included in `requirements.txt`.
+2. **Launch**: The benchmark script automatically launches the Phoenix app. You can access the dashboard at `http://localhost:6006`.
 
-### Using Weave with SimpleBench
+### Using Arize Phoenix with Bench AI
 
-To enable tracking with Weave, use the `--entity` and `--project` options when running the benchmark:
+When you run the benchmark, it will automatically start a local Phoenix server and record traces of every model call and evaluation step.
 
 ```bash
 python run_benchmark_production.py \
   --model_name=qwen3:14b \
   --dataset_source=sql-console-for-openai-openai-humaneval.json \
-  --entity="your-weave-entity" \
-  --project="project-name"
+  --project="my-benchmark-project"
 ```
 
-- `--entity`: Your Weave username or organization.
-- `--project`: The project name under which you want to record the experiment.
+- `--project`: The project name in the Phoenix dashboard.
 
-The evaluation results, including detailed scores and model predictions, will be automatically sent to your Weave project, allowing you to:
-
-- Compare performance across different models
-- Analyze prediction errors
-- Share your results with your team
+The Phoenix UI allows you to:
+- **Trace** exactly what was sent to and received from the LLM.
+- **Inspect** the spans and latency of your application.
+- **Debug** RAG or agentic workflows if extended.
 
 ### Available options
 
@@ -106,6 +105,7 @@ The evaluation results, including detailed scores and model predictions, will be
 | `--dataset_source` | Path to dataset source file | ./sql-console-for-openai-openai-humaneval.json |
 | `--dataset_type` | Dataset type (humaneval, cruxeval, code_x_glue) | auto-detected |
 | `--num_responses` | Number of responses for majority voting | 1 |
+| `--project` | Phoenix project name | simple_bench |
 | `--temp` | Temperature for the model | 0.1 |
 | `--max_tokens` | Maximum number of tokens to generate | 2048 |
 | `--top_p` | Top_p value for the model | 0.95 |
